@@ -349,7 +349,7 @@ func (node *Node) becomeLeader() {
 	peers := node.registry.GetPeers(node.id)
 	for _, peer := range peers {
 		node.nextIndex[peer.id] = len(node.logs)
-		node.matchIndex[peer.id] = 0
+		node.matchIndex[peer.id] = -1
 	}
 
 	node.mu.Unlock()
