@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"sort"
@@ -30,6 +31,10 @@ func (r Role) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+func (r Role) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.String())
 }
 
 type LogEntry struct {
@@ -412,6 +417,10 @@ type NodeView struct {
 
 func (node *Node) View() NodeView {
 	return NodeView{ID: node.id, Role: node.role, Term: node.currentTerm, LeaderID: node.leaderID, CommitIndex: node.commitIndex, Logs: node.logs}
+}
+
+func (node *Node) ID() NodeID {
+	return node.id
 }
 
 func (node *Node) Kill() {
