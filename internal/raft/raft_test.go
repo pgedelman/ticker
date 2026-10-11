@@ -1,6 +1,10 @@
 package raft
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+	"time"
+)
 
 func sendVote(node *Node, term int, candidate NodeID) RequestVoteReply {
 	replyChan := make(chan any, 1)
@@ -100,5 +104,141 @@ func TestBecomeLeader_InitializesPeerState(t *testing.T) {
 	}
 	if node.nextIndex == nil || node.matchIndex == nil {
 		t.Fatalf("expected nextIndex/matchIndex maps to be initialized, not nil")
+	}
+}
+
+func startCluster(size int) []*Node {
+	registry := NewNetworkRegistry()
+	nodes := make([]*Node, 0, size)
+	for id := NodeID(1); int(id) <= size; id++ {
+		node := NewNode(id, registry)
+		registry.Register(node)
+		nodes = append(nodes, node)
+	}
+	for _, node := range nodes {
+		go node.Start()
+	}
+	return nodes
+}
+
+func waitFor(t *testing.T, desc string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", desc)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForLeader waits until exactly one node in nodes is leader and returns it.
+func waitForLeader(t *testing.T, nodes []*Node) *Node {
+	t.Helper()
+	var leader *Node
+	waitFor(t, "a single leader", func() bool {
+		leader = nil
+		for _, node := range nodes {
+			if _, role, _, _, _ := node.Snapshot(); role == Leader {
+				if leader != nil {
+					return false
+				}
+				leader = node
+			}
+		}
+		return leader != nil
+	})
+	return leader
+}
+
+func termOf(node *Node) int {
+	_, _, term, _, _ := node.Snapshot()
+	return term
+}
+
+func logCopy(node *Node) []LogEntry {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	return append([]LogEntry(nil), node.logs...)
+}
+
+func proposeAll(nodes []*Node, cmd string) {
+	for _, node := range nodes {
+		node.Propose([]byte(cmd)) // no-op on every node except the leader
+	}
+}
+
+func without(nodes []*Node, exclude *Node) []*Node {
+	rest := make([]*Node, 0, len(nodes)-1)
+	for _, node := range nodes {
+		if node != exclude {
+			rest = append(rest, node)
+		}
+	}
+	return rest
+}
+
+func TestKillRevive_ReelectsAndRevivedNodeCatchesUp(t *testing.T) {
+	nodes := startCluster(3)
+
+	oldLeader := waitForLeader(t, nodes)
+	oldTerm := termOf(oldLeader)
+	proposeAll(nodes, "before-kill")
+	waitFor(t, "first entry to commit", func() bool {
+		_, _, _, commitIndex, _ := oldLeader.Snapshot()
+		return commitIndex >= 0
+	})
+
+	oldLeader.Kill()
+	survivors := without(nodes, oldLeader)
+	newLeader := waitForLeader(t, survivors)
+	if _, role, _, _, _ := oldLeader.Snapshot(); role != Dead {
+		t.Fatalf("expected killed node to stay dead while the cluster re-elects, got %v", role)
+	}
+	if term := termOf(newLeader); term <= oldTerm {
+		t.Fatalf("expected new leader's term to exceed %d, got %d", oldTerm, term)
+	}
+	if log := logCopy(newLeader); len(log) == 0 || string(log[0].Command) != "before-kill" {
+		t.Fatalf("expected committed entry to survive the leader's death, new leader has %+v", log)
+	}
+
+	for i := range 3 {
+		proposeAll(survivors, fmt.Sprintf("while-dead-%d", i))
+	}
+
+	oldLeader.Revive()
+	waitFor(t, "revived node to rejoin as a follower and match the leader's log", func() bool {
+		_, role, term, _, _ := oldLeader.Snapshot()
+		if role != Follower || term != termOf(newLeader) {
+			return false
+		}
+		want, got := logCopy(newLeader), logCopy(oldLeader)
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range want {
+			if got[i].Term != want[i].Term || string(got[i].Command) != string(want[i].Command) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// Killing and reviving the leader repeatedly means every node eventually
+// becomes leader, dies, and must later be able to stand for election again.
+func TestKillRevive_RepeatedLeaderFailures(t *testing.T) {
+	nodes := startCluster(3)
+
+	leader := waitForLeader(t, nodes)
+	for round := range 2 * len(nodes) {
+		term := termOf(leader)
+		leader.Kill()
+		next := waitForLeader(t, without(nodes, leader))
+		if termOf(next) <= term {
+			t.Fatalf("round %d: expected term to advance past %d, got %d", round, term, termOf(next))
+		}
+		leader.Revive()
+		leader = next
 	}
 }
