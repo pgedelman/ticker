@@ -63,20 +63,18 @@ function diffEvents(prev: Map<number, NodeView>, next: NodeView[]): string[] {
   return messages;
 }
 
-// Same-origin: the Go server serves this app's static build alongside the
-// API, so these resolve correctly whether running locally or deployed.
+// Same-origin: the Go server serves this app's static build alongside the API.
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
-const API_BASE = '';
 const MAX_TIMELINE_EVENTS = 20;
 const MAX_TICKER_ENTRIES = 15;
 
 async function killNode(id: number) {
-  await fetch(`${API_BASE}/nodes/${id}/kill`, { method: 'POST' });
+  await fetch(`/nodes/${id}/kill`, { method: 'POST' });
 }
 
 async function reviveNode(id: number) {
-  await fetch(`${API_BASE}/nodes/${id}/revive`, { method: 'POST' });
+  await fetch(`/nodes/${id}/revive`, { method: 'POST' });
 }
 
 function App() {

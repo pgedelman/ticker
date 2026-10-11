@@ -50,19 +50,7 @@ func main() {
 		port = "8000"
 	}
 	log.Printf("listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, withCORS(mux)))
-}
-
-func withCORS(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
 func nodeFromRequest(nodes []*raft.Node, r *http.Request) (*raft.Node, bool) {
@@ -103,7 +91,7 @@ func reviveHandler(nodes []*raft.Node) http.HandlerFunc {
 }
 
 func wsHandler(nodes []*raft.Node) http.HandlerFunc {
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	var upgrader websocket.Upgrader
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
