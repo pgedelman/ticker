@@ -96,7 +96,11 @@ func (node *Node) Start() {
 	go node.updateLogs()
 
 	for rpc := range node.rpcChan {
-		if node.role == Dead {
+		node.mu.Lock()
+		dead := node.role == Dead
+		node.mu.Unlock()
+
+		if dead {
 			continue // Drain but don't reply
 		}
 		switch msg := rpc.Payload.(type) {
@@ -166,7 +170,11 @@ func (node *Node) HandleRequestVote(rpc RPCEnvelope, msg RequestVoteArgs) {
 
 func (node *Node) runElectionTimer() {
 	for range node.electionTimer.C {
-		if node.role == Leader {
+		node.mu.Lock()
+		leader := node.role == Leader
+		node.mu.Unlock()
+
+		if leader {
 			break
 		}
 		node.becomeCandidate()
@@ -373,17 +381,21 @@ func (node *Node) requestVotes() {
 	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
 	replyChan := make(chan any, len(peers))
 
+	node.mu.Lock()
+	term := node.currentTerm
+	node.mu.Unlock()
+
 	for _, peer := range peers {
 		go func() {
 			peer.rpcChan <- RPCEnvelope{
-				Term:      node.currentTerm,
+				Term:      term,
 				Payload:   RequestVoteArgs{CandidateID: node.id},
 				ReplyChan: replyChan,
 			}
 		}()
 	}
 
-	go node.runVoteHandler(replyChan, node.currentTerm, len(peers)+1)
+	go node.runVoteHandler(replyChan, term, len(peers)+1)
 }
 
 func (node *Node) Snapshot() (id NodeID, role Role, term int, commitIndex int, logLen int) {
@@ -416,7 +428,9 @@ type NodeView struct {
 }
 
 func (node *Node) View() NodeView {
-	return NodeView{ID: node.id, Role: node.role, Term: node.currentTerm, LeaderID: node.leaderID, CommitIndex: node.commitIndex, Logs: node.logs}
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	return NodeView{ID: node.id, Role: node.role, Term: node.currentTerm, LeaderID: node.leaderID, CommitIndex: node.commitIndex, Logs: append([]LogEntry(nil), node.logs...)}
 }
 
 func (node *Node) ID() NodeID {
