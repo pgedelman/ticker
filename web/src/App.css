@@ -1,0 +1,167 @@
+.app {
+  padding: 24px;
+}
+
+.status {
+  font-family: var(--mono);
+  margin-bottom: 24px;
+}
+
+.status.connected {
+  color: #2fa84f;
+}
+
+.status.disconnected {
+  color: #d94f4f;
+}
+
+.nodes {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.node-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  width: 220px;
+  text-align: left;
+}
+
+.node-card.role-leader {
+  border-color: #2fa84f;
+  box-shadow: 0 0 0 1px #2fa84f;
+}
+
+.node-card.role-candidate {
+  border-color: #d9a441;
+  box-shadow: 0 0 0 1px #d9a441;
+}
+
+.node-card.role-dead {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.node-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.node-card dt {
+  color: var(--text);
+}
+
+.node-card dd {
+  margin: 0;
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.node-action {
+  margin-top: 16px;
+  width: 100%;
+  padding: 6px 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-h);
+  font-family: var(--mono);
+  cursor: pointer;
+}
+
+.node-action.kill {
+  border-color: #d94f4f;
+  color: #d94f4f;
+}
+
+.node-action.kill:hover {
+  background: rgba(217, 79, 79, 0.1);
+}
+
+.node-action.revive {
+  border-color: #2fa84f;
+  color: #2fa84f;
+}
+
+.node-action.revive:hover {
+  background: rgba(47, 168, 79, 0.1);
+}
+
+.panels {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 32px;
+  max-width: 900px;
+  margin-inline: auto;
+}
+
+.panel {
+  flex: 1 1 380px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: left;
+}
+
+.panel h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  color: var(--text-h);
+}
+
+.ticker-tape {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 14px;
+  padding-bottom: 4px;
+}
+
+.ticker-entry {
+  white-space: nowrap;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.ticker-entry.up {
+  color: #2fa84f;
+}
+
+.ticker-entry.down {
+  color: #d94f4f;
+}
+
+.ticker-empty,
+.timeline-empty {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 14px;
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timeline-time {
+  font-family: var(--mono);
+  color: var(--text);
+  margin-right: 6px;
+}

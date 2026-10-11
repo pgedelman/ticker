@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"sort"
@@ -32,6 +33,10 @@ func (r Role) String() string {
 	}
 }
 
+func (r Role) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.String())
+}
+
 type LogEntry struct {
 	Term    int
 	Index   int
@@ -60,25 +65,27 @@ type Node struct {
 	role     Role
 	leaderID *NodeID
 
-	electionTimer  *time.Timer
-	heartbeatEvery time.Duration
+	electionTimer   *time.Timer
+	electionTimeout time.Duration
 
 	rpcChan chan RPCEnvelope
 }
 
+const rpcTimeout = 100 * time.Millisecond
+
 func NewNode(id NodeID, registry *NetworkRegistry) *Node {
-	hE := time.Duration(150+rand.IntN(151)) * time.Millisecond
+	electionTimeout := time.Duration(150+rand.IntN(151)) * time.Millisecond
 	node := &Node{
-		id:             id,
-		registry:       registry,
-		role:           Follower,
-		commitIndex:    -1,
-		lastApplied:    -1,
-		nextIndex:      make(map[NodeID]int),
-		matchIndex:     make(map[NodeID]int),
-		heartbeatEvery: hE,
-		electionTimer:  time.NewTimer(hE),
-		rpcChan:        make(chan RPCEnvelope),
+		id:              id,
+		registry:        registry,
+		role:            Follower,
+		commitIndex:     -1,
+		lastApplied:     -1,
+		nextIndex:       make(map[NodeID]int),
+		matchIndex:      make(map[NodeID]int),
+		electionTimeout: electionTimeout,
+		electionTimer:   time.NewTimer(electionTimeout),
+		rpcChan:         make(chan RPCEnvelope),
 	}
 	node.applyCond = sync.NewCond(&node.mu)
 	return node
@@ -89,6 +96,9 @@ func (node *Node) Start() {
 	go node.updateLogs()
 
 	for rpc := range node.rpcChan {
+		if node.role == Dead {
+			continue // Drain but don't reply
+		}
 		switch msg := rpc.Payload.(type) {
 		case AppendEntriesArgs:
 			node.HandleAppendEntry(rpc, msg)
@@ -128,7 +138,7 @@ func (node *Node) HandleAppendEntry(rpc RPCEnvelope, msg AppendEntriesArgs) {
 	node.mu.Unlock()
 
 	rpc.ReplyChan <- reply
-	node.electionTimer.Reset(node.heartbeatEvery) //  Reset heartbeat timer
+	node.electionTimer.Reset(node.electionTimeout) // Reset election timer
 }
 
 func (node *Node) HandleRequestVote(rpc RPCEnvelope, msg RequestVoteArgs) {
@@ -146,7 +156,7 @@ func (node *Node) HandleRequestVote(rpc RPCEnvelope, msg RequestVoteArgs) {
 	if rpc.Term >= node.currentTerm && (node.votedFor == nil || *node.votedFor == msg.CandidateID) {
 		reply.VoteGranted = true
 		node.votedFor = &msg.CandidateID
-		node.electionTimer.Reset(node.heartbeatEvery)
+		node.electionTimer.Reset(node.electionTimeout)
 		fmt.Printf("[%d] Voted YES for %d\n", node.id, msg.CandidateID)
 	} else {
 		fmt.Printf("[%d] Voted NO for %d\n", node.id, msg.CandidateID)
@@ -161,7 +171,7 @@ func (node *Node) runElectionTimer() {
 		}
 		node.becomeCandidate()
 		go node.requestVotes()
-		node.electionTimer.Reset(node.heartbeatEvery)
+		node.electionTimer.Reset(node.electionTimeout)
 	}
 }
 
@@ -242,28 +252,32 @@ func (node *Node) broadcastHeartbeats() {
 				ReplyChan: replyChan,
 			}
 
-			msg := <-replyChan // exactly one reply is ever sent per RPC
-			reply, ok := msg.(AppendEntriesReply)
-			if !ok {
+			select {
+			case msg := <-replyChan: // One reply is ever sent per RPC
+				reply, ok := msg.(AppendEntriesReply)
+				if !ok {
+					return
+				}
+
+				node.mu.Lock()
+				defer node.mu.Unlock()
+
+				if reply.Term > node.currentTerm {
+					node.currentTerm = reply.Term
+					node.role = Follower
+					node.electionTimer.Reset(node.electionTimeout)
+					return
+				}
+
+				if reply.Success {
+					node.matchIndex[peer.id] = args.PrevLogIndex + len(args.Entries)
+					node.nextIndex[peer.id] = node.matchIndex[peer.id] + 1
+					node.advanceCommitIndex()
+				} else if node.nextIndex[peer.id] > 1 {
+					node.nextIndex[peer.id]--
+				}
+			case <-time.After(rpcTimeout): // Peer did not reply
 				return
-			}
-
-			node.mu.Lock()
-			defer node.mu.Unlock()
-
-			if reply.Term > node.currentTerm {
-				node.currentTerm = reply.Term
-				node.role = Follower
-				node.electionTimer.Reset(node.heartbeatEvery)
-				return
-			}
-
-			if reply.Success {
-				node.matchIndex[peer.id] = args.PrevLogIndex + len(args.Entries)
-				node.nextIndex[peer.id] = node.matchIndex[peer.id] + 1
-				node.advanceCommitIndex()
-			} else if node.nextIndex[peer.id] > 1 {
-				node.nextIndex[peer.id]--
 			}
 		}(s.peer, s.args)
 	}
@@ -390,4 +404,41 @@ func (node *Node) Propose(cmd []byte) {
 		node.applyCond.Signal()
 	}
 	node.mu.Unlock()
+}
+
+type NodeView struct {
+	ID          NodeID
+	Role        Role
+	Term        int
+	LeaderID    *NodeID
+	CommitIndex int
+	Logs        []LogEntry
+}
+
+func (node *Node) View() NodeView {
+	return NodeView{ID: node.id, Role: node.role, Term: node.currentTerm, LeaderID: node.leaderID, CommitIndex: node.commitIndex, Logs: node.logs}
+}
+
+func (node *Node) ID() NodeID {
+	return node.id
+}
+
+func (node *Node) Kill() {
+	if !node.electionTimer.Stop() {
+		select {
+		case <-node.electionTimer.C:
+		default:
+		}
+	}
+
+	node.mu.Lock()
+	node.role = Dead
+	node.mu.Unlock()
+}
+
+func (node *Node) Revive() {
+	node.mu.Lock()
+	node.role = Follower
+	node.mu.Unlock()
+	node.electionTimer.Reset(node.electionTimeout)
 }

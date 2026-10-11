@@ -13,6 +13,10 @@ A Raft consensus implementation in Go: leader election, heartbeats, log replicat
 
 `cmd/node/main.go` is a small driver: it starts a 3-node cluster, lets an election settle, proposes an entry, and prints where each node landed.
 
+`cmd/server/main.go` runs a 3-node cluster behind an HTTP server: it proposes a simulated market tick (`{symbol, price, seq}`) every 500ms, streams every node's state over a WebSocket at `/ws`, and exposes `POST /nodes/{id}/kill` and `POST /nodes/{id}/revive`.
+
+`web/` is a React + TypeScript dashboard for that server. It shows each node's role, term, commit index, and log, the replicated tick feed, and a timeline of leader changes. Kill the leader and watch the cluster elect a new one without losing the feed.
+
 ## Running it
 
 ```
@@ -20,6 +24,15 @@ go build ./...
 go test ./...
 go run ./cmd/node
 ```
+
+To run the dashboard, build the frontend and start the server from the repo root (it serves `web/dist`):
+
+```
+cd web && npm install && npm run build && cd ..
+go run ./cmd/server
+```
+
+Then open http://localhost:8000 (set `PORT` to change it). For frontend development, run `npm run dev` in `web/` alongside the server; Vite proxies `/ws` and `/nodes` to port 8000.
 
 ## Notes
 
