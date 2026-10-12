@@ -256,3 +256,21 @@ func TestHandleAppendEntry_StaleAppendDoesNotTruncate(t *testing.T) {
 		t.Fatalf("expected a stale append to entries, got %d", len(node.logs))
 	}
 }
+
+func TestHandleAppendEntry_LowerTerm(t *testing.T) {
+	node := NewNode(1, NewNetworkRegistry())
+	node.logs = []LogEntry{{Term: 1}, {Term: 1}}
+	node.currentTerm = 3
+
+	reply := sendAppend(node, 2, AppendEntriesArgs{PrevLogIndex: 1, PrevLogTerm: 1, Entries: []LogEntry{{Term: 2}}})
+
+	if reply.Success {
+		t.Fatalf("expected an append from a stale term to be rejected")
+	}
+	if reply.Term != 3 {
+		t.Fatalf("expected reply term 3 so the stale leader steps down, got %d", reply.Term)
+	}
+	if len(node.logs) != 2 {
+		t.Fatalf("expected log unchanged after a rejected append, got %d entries", len(node.logs))
+	}
+}

@@ -113,19 +113,25 @@ func (node *Node) Start() {
 }
 
 func (node *Node) HandleAppendEntry(rpc RPCEnvelope, msg AppendEntriesArgs) {
+	node.mu.Lock()
+
+	if rpc.Term < node.currentTerm { // Reject appends from a stale leader
+		reply := AppendEntriesReply{Term: node.currentTerm, Success: false}
+		node.mu.Unlock()
+		rpc.ReplyChan <- reply
+		return
+	}
+
 	if !node.electionTimer.Stop() { // Reset timer (received a heartbeat)
 		select {
 		case <-node.electionTimer.C:
 		default:
 		}
 	}
-	node.mu.Lock()
 
-	if rpc.Term >= node.currentTerm { // Peer has a newer leader
-		node.leaderID = &msg.LeaderID
-		node.role = Follower
-		node.currentTerm = rpc.Term
-	}
+	node.leaderID = &msg.LeaderID
+	node.role = Follower
+	node.currentTerm = rpc.Term
 
 	reply := AppendEntriesReply{Term: node.currentTerm, Success: false}
 
@@ -265,7 +271,7 @@ func (node *Node) broadcastHeartbeats() {
 
 	for _, s := range sends {
 		go func(peer *Node, args AppendEntriesArgs) {
-			replyChan := make(chan any)
+			replyChan := make(chan any, 1)
 			peer.rpcChan <- RPCEnvelope{
 				Term:      term,
 				Payload:   args,
