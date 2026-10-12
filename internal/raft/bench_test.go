@@ -252,13 +252,15 @@ func benchRepoRoot() string {
 	return filepath.Join("..", "..")
 }
 
+// benchGitCommit returns HEAD, flagging uncommitted changes other than this
+// harness's own output files.
 func benchGitCommit() string {
 	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
 		return "unknown"
 	}
 	commit := strings.TrimSpace(string(out))
-	if status, err := exec.Command("git", "status", "--porcelain").Output(); err == nil && len(bytes.TrimSpace(status)) > 0 {
+	if status, err := exec.Command("git", "status", "--porcelain", "--", ":/", ":(top,exclude)bench-results", ":(top,exclude)BENCHMARKS.md").Output(); err == nil && len(bytes.TrimSpace(status)) > 0 {
 		commit += " (working tree has uncommitted changes)"
 	}
 	return commit
