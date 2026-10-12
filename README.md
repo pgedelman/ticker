@@ -15,7 +15,7 @@ A Raft consensus implementation in Go: leader election, heartbeats, log replicat
 
 `cmd/server/main.go` runs a 3-node cluster behind an HTTP server: it proposes a simulated market tick (`{symbol, price, seq}`) every 500ms, streams every node's state over a WebSocket at `/ws`, and exposes `POST /nodes/{id}/kill` and `POST /nodes/{id}/revive`.
 
-`web/` is a React + TypeScript dashboard for that server. It shows each node's role, term, commit index, and log, the replicated tick feed, and a timeline of leader changes. Kill the leader and watch the cluster elect a new one without losing the feed.
+`web/` is a React + TypeScript dashboard for that server. It shows each node's role, term, commit index, and log, the replicated tick feed, and a timeline of leader changes. Kill the leader and watch the cluster elect a new one without losing committed ticks.
 
 ## Running it
 

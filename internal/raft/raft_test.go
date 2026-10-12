@@ -242,3 +242,110 @@ func TestKillRevive_RepeatedLeaderFailures(t *testing.T) {
 		leader = next
 	}
 }
+
+func TestHandleAppendEntry_StaleAppendDoesNotTruncate(t *testing.T) {
+	node := NewNode(1, NewNetworkRegistry())
+	node.logs = []LogEntry{{Term: 1}, {Term: 1}, {Term: 1}}
+
+	reply := sendAppend(node, 1, AppendEntriesArgs{PrevLogIndex: 0, PrevLogTerm: 1, Entries: []LogEntry{{Term: 1}}})
+
+	if !reply.Success {
+		t.Fatalf("expected append to succeed, the followers log")
+	}
+	if len(node.logs) != 3 {
+		t.Fatalf("expected a stale append to entries, got %d", len(node.logs))
+	}
+}
+
+func TestHandleAppendEntry_LowerTerm(t *testing.T) {
+	node := NewNode(1, NewNetworkRegistry())
+	node.logs = []LogEntry{{Term: 1}, {Term: 1}}
+	node.currentTerm = 3
+
+	reply := sendAppend(node, 2, AppendEntriesArgs{PrevLogIndex: 1, PrevLogTerm: 1, Entries: []LogEntry{{Term: 2}}})
+
+	if reply.Success {
+		t.Fatalf("expected an append from a stale term to be rejected")
+	}
+	if reply.Term != 3 {
+		t.Fatalf("expected reply term 3 so the stale leader steps down, got %d", reply.Term)
+	}
+	if len(node.logs) != 2 {
+		t.Fatalf("expected log unchanged after a rejected append, got %d entries", len(node.logs))
+	}
+}
+
+// newTestLeader returns a leader in term with logs and a single peer 2 that has replicated nothing yet.
+func newTestLeader(term int, logs []LogEntry) *Node {
+	node := NewNode(1, NewNetworkRegistry())
+	node.currentTerm = term
+	node.role = Leader
+	node.logs = logs
+	node.nextIndex = map[NodeID]int{2: len(logs)}
+	node.matchIndex = map[NodeID]int{2: -1}
+	return node
+}
+
+func TestHandleAppendReply_LateReplyDoesNotLowerMatchIndex(t *testing.T) {
+	node := newTestLeader(1, []LogEntry{{Term: 1}, {Term: 1}, {Term: 1}})
+	ok := AppendEntriesReply{Term: 1, Success: true}
+
+	node.handleAppendReply(2, 1, AppendEntriesArgs{PrevLogIndex: -1, Entries: node.logs}, ok)
+	// The reply to an earlier heartbeat that only carried the first two entries arrives late.
+	node.handleAppendReply(2, 1, AppendEntriesArgs{PrevLogIndex: -1, Entries: node.logs[:2]}, ok)
+
+	if node.matchIndex[2] != 2 {
+		t.Fatalf("expected matchIndex to stay 2 after a late reply, got %d", node.matchIndex[2])
+	}
+	if node.nextIndex[2] != 3 {
+		t.Fatalf("expected nextIndex to stay 3 after a late reply, got %d", node.nextIndex[2])
+	}
+}
+
+func TestHandleAppendReply_IgnoresReplyFromEarlierTerm(t *testing.T) {
+	node := newTestLeader(3, []LogEntry{{Term: 1}, {Term: 3}})
+
+	node.handleAppendReply(2, 2, AppendEntriesArgs{PrevLogIndex: -1, Entries: node.logs}, AppendEntriesReply{Term: 2, Success: true})
+	if node.matchIndex[2] != -1 {
+		t.Fatalf("expected a success reply from term 2 to be ignored in term 3, matchIndex got %d", node.matchIndex[2])
+	}
+
+	node.handleAppendReply(2, 2, AppendEntriesArgs{PrevLogIndex: 1, PrevLogTerm: 3}, AppendEntriesReply{Term: 2, Success: false})
+	if node.nextIndex[2] != 2 {
+		t.Fatalf("expected a failure reply from term 2 to be ignored in term 3, nextIndex got %d", node.nextIndex[2])
+	}
+}
+
+func TestHandleAppendReply_NextIndexBacksOffToZero(t *testing.T) {
+	node := newTestLeader(2, []LogEntry{{Term: 2}})
+	node.nextIndex[2] = 1 // follower's entry 0 conflicts, so PrevLogIndex 0 keeps failing
+
+	node.handleAppendReply(2, 2, AppendEntriesArgs{PrevLogIndex: 0, PrevLogTerm: 2}, AppendEntriesReply{Term: 2, Success: false})
+
+	if node.nextIndex[2] != 0 {
+		t.Fatalf("expected nextIndex to back off to 0 so the next append uses PrevLogIndex -1, got %d", node.nextIndex[2])
+	}
+}
+
+func TestPropose_OnlyLeaderAccepts(t *testing.T) {
+	node := NewNode(1, NewNetworkRegistry())
+
+	if _, _, ok := node.Propose([]byte("a")); ok {
+		t.Fatalf("expected a follower to reject a proposal")
+	}
+	if len(node.logs) != 0 {
+		t.Fatalf("expected a rejected proposal to leave the log empty, got %d entries", len(node.logs))
+	}
+
+	node.currentTerm = 2
+	node.becomeLeader()
+	for i, cmd := range []string{"a", "b"} {
+		index, term, ok := node.Propose([]byte(cmd))
+		if !ok || index != i || term != 2 {
+			t.Fatalf("proposal %q: expected (%d, 2, true), got (%d, %d, %v)", cmd, i, index, term, ok)
+		}
+		if string(node.logs[i].Command) != cmd {
+			t.Fatalf("expected log[%d] to hold %q, got %q", i, cmd, node.logs[i].Command)
+		}
+	}
+}

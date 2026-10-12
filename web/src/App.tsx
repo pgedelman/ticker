@@ -115,7 +115,7 @@ function App() {
 
   return (
     <div className="app">
-      <h1>Raft Market Feed</h1>
+      <h1>ticker</h1>
       <p className={`status ${connected ? 'connected' : 'disconnected'}`}>
         {connected ? 'connected to cluster' : 'disconnected'}
       </p>

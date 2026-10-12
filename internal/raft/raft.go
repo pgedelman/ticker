@@ -113,25 +113,40 @@ func (node *Node) Start() {
 }
 
 func (node *Node) HandleAppendEntry(rpc RPCEnvelope, msg AppendEntriesArgs) {
+	node.mu.Lock()
+
+	if rpc.Term < node.currentTerm { // Reject appends from a stale leader
+		reply := AppendEntriesReply{Term: node.currentTerm, Success: false}
+		node.mu.Unlock()
+		rpc.ReplyChan <- reply
+		return
+	}
+
 	if !node.electionTimer.Stop() { // Reset timer (received a heartbeat)
 		select {
 		case <-node.electionTimer.C:
 		default:
 		}
 	}
-	node.mu.Lock()
 
-	if rpc.Term >= node.currentTerm { // Peer has a newer leader
-		node.leaderID = &msg.LeaderID
-		node.role = Follower
-		node.currentTerm = rpc.Term
-	}
+	node.leaderID = &msg.LeaderID
+	node.role = Follower
+	node.currentTerm = rpc.Term
 
 	reply := AppendEntriesReply{Term: node.currentTerm, Success: false}
 
 	if msg.PrevLogIndex < 0 || (msg.PrevLogIndex < len(node.logs) && node.logs[msg.PrevLogIndex].Term == msg.PrevLogTerm) {
-		node.logs = node.logs[:msg.PrevLogIndex+1]
-		node.logs = append(node.logs, msg.Entries...)
+		for i, entry := range msg.Entries {
+			idx := msg.PrevLogIndex + 1 + i
+			if idx >= len(node.logs) {
+				node.logs = append(node.logs, msg.Entries[i:]...)
+				break
+			}
+			if node.logs[idx].Term != entry.Term {
+				node.logs = append(node.logs[:idx], msg.Entries[i:]...)
+				break
+			}
+		}
 
 		if msg.LeaderCommit > node.commitIndex {
 			node.commitIndex = min(msg.LeaderCommit, msg.PrevLogIndex+1)
@@ -155,9 +170,12 @@ func (node *Node) HandleRequestVote(rpc RPCEnvelope, msg RequestVoteArgs) {
 		node.votedFor = nil
 	}
 
+	myLastIndex, myLastTerm := node.lastLogInfo()
+	upToDate := msg.LastLogTerm > myLastTerm || (msg.LastLogTerm == myLastTerm && msg.LastLogIndex >= myLastIndex)
+
 	reply := RequestVoteReply{Term: node.currentTerm, VoteGranted: false}
 
-	if rpc.Term >= node.currentTerm && (node.votedFor == nil || *node.votedFor == msg.CandidateID) {
+	if rpc.Term >= node.currentTerm && upToDate && (node.votedFor == nil || *node.votedFor == msg.CandidateID) {
 		reply.VoteGranted = true
 		node.votedFor = &msg.CandidateID
 		node.electionTimer.Reset(node.electionTimeout)
@@ -253,7 +271,7 @@ func (node *Node) broadcastHeartbeats() {
 
 	for _, s := range sends {
 		go func(peer *Node, args AppendEntriesArgs) {
-			replyChan := make(chan any)
+			replyChan := make(chan any, 1)
 			peer.rpcChan <- RPCEnvelope{
 				Term:      term,
 				Payload:   args,
@@ -268,27 +286,44 @@ func (node *Node) broadcastHeartbeats() {
 				}
 
 				node.mu.Lock()
-				defer node.mu.Unlock()
-
-				if reply.Term > node.currentTerm {
-					node.currentTerm = reply.Term
-					node.role = Follower
-					node.electionTimer.Reset(node.electionTimeout)
-					return
-				}
-
-				if reply.Success {
-					node.matchIndex[peer.id] = args.PrevLogIndex + len(args.Entries)
-					node.nextIndex[peer.id] = node.matchIndex[peer.id] + 1
-					node.advanceCommitIndex()
-				} else if node.nextIndex[peer.id] > 1 {
-					node.nextIndex[peer.id]--
-				}
+				node.handleAppendReply(peer.id, term, args, reply)
+				node.mu.Unlock()
 			case <-time.After(rpcTimeout): // Peer did not reply
 				return
 			}
 		}(s.peer, s.args)
 	}
+}
+
+// handleAppendReply processes a peer's reply to an AppendEntries sent in term. Caller must hold node.mu.
+func (node *Node) handleAppendReply(peer NodeID, term int, args AppendEntriesArgs, reply AppendEntriesReply) {
+	if reply.Term > node.currentTerm {
+		node.currentTerm = reply.Term
+		node.role = Follower
+		node.electionTimer.Reset(node.electionTimeout)
+		return
+	}
+
+	if node.role != Leader || node.currentTerm != term {
+		return // Reply to a heartbeat from an earlier term, no longer meaningful
+	}
+
+	if reply.Success {
+		node.matchIndex[peer] = max(node.matchIndex[peer], args.PrevLogIndex+len(args.Entries))
+		node.nextIndex[peer] = node.matchIndex[peer] + 1
+		node.advanceCommitIndex()
+	} else if node.nextIndex[peer] > 0 {
+		node.nextIndex[peer]--
+	}
+}
+
+func (node *Node) lastLogInfo() (index int, term int) {
+	index = len(node.logs) - 1
+	if index >= 0 {
+		term = node.logs[index].Term
+	}
+
+	return index, term
 }
 
 func (node *Node) advanceCommitIndex() {
@@ -378,18 +413,19 @@ func (node *Node) becomeLeader() {
 }
 
 func (node *Node) requestVotes() {
-	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
-	replyChan := make(chan any, len(peers))
-
 	node.mu.Lock()
 	term := node.currentTerm
+	id := node.id
+	lastIndex, lastTerm := node.lastLogInfo()
+	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
+	replyChan := make(chan any, len(peers))
 	node.mu.Unlock()
 
 	for _, peer := range peers {
 		go func() {
 			peer.rpcChan <- RPCEnvelope{
 				Term:      term,
-				Payload:   RequestVoteArgs{CandidateID: node.id},
+				Payload:   RequestVoteArgs{CandidateID: id, LastLogIndex: lastIndex, LastLogTerm: lastTerm},
 				ReplyChan: replyChan,
 			}
 		}()
@@ -404,18 +440,21 @@ func (node *Node) Snapshot() (id NodeID, role Role, term int, commitIndex int, l
 	return node.id, node.role, node.currentTerm, node.commitIndex, len(node.logs)
 }
 
-func (node *Node) Propose(cmd []byte) {
+func (node *Node) Propose(cmd []byte) (index int, term int, ok bool) {
 	node.mu.Lock()
-	if node.role == Leader {
-		entry := LogEntry{
-			Term:    node.currentTerm,
-			Index:   len(node.logs),
-			Command: cmd,
-		}
-		node.logs = append(node.logs, entry)
-		node.applyCond.Signal()
+	defer node.mu.Unlock()
+
+	if node.role != Leader {
+		return -1, node.currentTerm, false
 	}
-	node.mu.Unlock()
+	index = len(node.logs)
+	node.logs = append(node.logs, LogEntry{
+		Term:    node.currentTerm,
+		Index:   index,
+		Command: cmd,
+	})
+	node.applyCond.Signal()
+	return index, node.currentTerm, true
 }
 
 type NodeView struct {
