@@ -242,3 +242,17 @@ func TestKillRevive_RepeatedLeaderFailures(t *testing.T) {
 		leader = next
 	}
 }
+
+func TestHandleAppendEntry_StaleAppendDoesNotTruncate(t *testing.T) {
+	node := NewNode(1, NewNetworkRegistry())
+	node.logs = []LogEntry{{Term: 1}, {Term: 1}, {Term: 1}}
+
+	reply := sendAppend(node, 1, AppendEntriesArgs{PrevLogIndex: 0, PrevLogTerm: 1, Entries: []LogEntry{{Term: 1}}})
+
+	if !reply.Success {
+		t.Fatalf("expected append to succeed, the followers log")
+	}
+	if len(node.logs) != 3 {
+		t.Fatalf("expected a stale append to entries, got %d", len(node.logs))
+	}
+}

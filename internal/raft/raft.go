@@ -130,8 +130,17 @@ func (node *Node) HandleAppendEntry(rpc RPCEnvelope, msg AppendEntriesArgs) {
 	reply := AppendEntriesReply{Term: node.currentTerm, Success: false}
 
 	if msg.PrevLogIndex < 0 || (msg.PrevLogIndex < len(node.logs) && node.logs[msg.PrevLogIndex].Term == msg.PrevLogTerm) {
-		node.logs = node.logs[:msg.PrevLogIndex+1]
-		node.logs = append(node.logs, msg.Entries...)
+		for i, entry := range msg.Entries {
+			idx := msg.PrevLogIndex + 1 + i
+			if idx >= len(node.logs) {
+				node.logs = append(node.logs, msg.Entries[i:]...)
+				break
+			}
+			if node.logs[idx].Term != entry.Term {
+				node.logs = append(node.logs[:idx], msg.Entries[i:]...)
+				break
+			}
+		}
 
 		if msg.LeaderCommit > node.commitIndex {
 			node.commitIndex = min(msg.LeaderCommit, msg.PrevLogIndex+1)
