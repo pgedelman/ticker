@@ -155,9 +155,12 @@ func (node *Node) HandleRequestVote(rpc RPCEnvelope, msg RequestVoteArgs) {
 		node.votedFor = nil
 	}
 
+	myLastIndex, myLastTerm := node.lastLogInfo()
+	upToDate := msg.LastLogTerm > myLastTerm || (msg.LastLogTerm == myLastTerm && msg.LastLogIndex >= myLastIndex)
+
 	reply := RequestVoteReply{Term: node.currentTerm, VoteGranted: false}
 
-	if rpc.Term >= node.currentTerm && (node.votedFor == nil || *node.votedFor == msg.CandidateID) {
+	if rpc.Term >= node.currentTerm && upToDate && (node.votedFor == nil || *node.votedFor == msg.CandidateID) {
 		reply.VoteGranted = true
 		node.votedFor = &msg.CandidateID
 		node.electionTimer.Reset(node.electionTimeout)
@@ -291,6 +294,15 @@ func (node *Node) broadcastHeartbeats() {
 	}
 }
 
+func (node *Node) lastLogInfo() (index int, term int) {
+	index = len(node.logs) - 1
+	if index >= 0 {
+		term = node.logs[index].Term
+	}
+
+	return index, term
+}
+
 func (node *Node) advanceCommitIndex() {
 	matches := make([]int, 0, len(node.matchIndex)+1)
 	matches = append(matches, len(node.logs)-1)
@@ -378,18 +390,19 @@ func (node *Node) becomeLeader() {
 }
 
 func (node *Node) requestVotes() {
-	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
-	replyChan := make(chan any, len(peers))
-
 	node.mu.Lock()
 	term := node.currentTerm
+	id := node.id
+	lastIndex, lastTerm := node.lastLogInfo()
+	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
+	replyChan := make(chan any, len(peers))
 	node.mu.Unlock()
 
 	for _, peer := range peers {
 		go func() {
 			peer.rpcChan <- RPCEnvelope{
 				Term:      term,
-				Payload:   RequestVoteArgs{CandidateID: node.id},
+				Payload:   RequestVoteArgs{CandidateID: id, LastLogIndex: lastIndex, LastLogTerm: lastTerm},
 				ReplyChan: replyChan,
 			}
 		}()
