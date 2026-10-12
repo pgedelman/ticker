@@ -29,12 +29,14 @@ func main() {
 
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
-		seq := 0
+		seq := 1
 		for range ticker.C {
-			seq++
 			tick, _ := json.Marshal(map[string]any{"symbol": "AAPL", "price": 190 + rand.Float64()*10, "seq": seq})
 			for _, n := range nodes {
-				n.Propose(tick) // no-op on non-leaders, same pattern as cmd/node
+				if _, _, ok := n.Propose(tick); ok {
+					seq++
+					break
+				}
 			}
 		}
 	}()

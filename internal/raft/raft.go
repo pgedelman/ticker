@@ -286,26 +286,34 @@ func (node *Node) broadcastHeartbeats() {
 				}
 
 				node.mu.Lock()
-				defer node.mu.Unlock()
-
-				if reply.Term > node.currentTerm {
-					node.currentTerm = reply.Term
-					node.role = Follower
-					node.electionTimer.Reset(node.electionTimeout)
-					return
-				}
-
-				if reply.Success {
-					node.matchIndex[peer.id] = args.PrevLogIndex + len(args.Entries)
-					node.nextIndex[peer.id] = node.matchIndex[peer.id] + 1
-					node.advanceCommitIndex()
-				} else if node.nextIndex[peer.id] > 1 {
-					node.nextIndex[peer.id]--
-				}
+				node.handleAppendReply(peer.id, term, args, reply)
+				node.mu.Unlock()
 			case <-time.After(rpcTimeout): // Peer did not reply
 				return
 			}
 		}(s.peer, s.args)
+	}
+}
+
+// handleAppendReply processes a peer's reply to an AppendEntries sent in term. Caller must hold node.mu.
+func (node *Node) handleAppendReply(peer NodeID, term int, args AppendEntriesArgs, reply AppendEntriesReply) {
+	if reply.Term > node.currentTerm {
+		node.currentTerm = reply.Term
+		node.role = Follower
+		node.electionTimer.Reset(node.electionTimeout)
+		return
+	}
+
+	if node.role != Leader || node.currentTerm != term {
+		return // Reply to a heartbeat from an earlier term, no longer meaningful
+	}
+
+	if reply.Success {
+		node.matchIndex[peer] = max(node.matchIndex[peer], args.PrevLogIndex+len(args.Entries))
+		node.nextIndex[peer] = node.matchIndex[peer] + 1
+		node.advanceCommitIndex()
+	} else if node.nextIndex[peer] > 0 {
+		node.nextIndex[peer]--
 	}
 }
 
@@ -432,18 +440,21 @@ func (node *Node) Snapshot() (id NodeID, role Role, term int, commitIndex int, l
 	return node.id, node.role, node.currentTerm, node.commitIndex, len(node.logs)
 }
 
-func (node *Node) Propose(cmd []byte) {
+func (node *Node) Propose(cmd []byte) (index int, term int, ok bool) {
 	node.mu.Lock()
-	if node.role == Leader {
-		entry := LogEntry{
-			Term:    node.currentTerm,
-			Index:   len(node.logs),
-			Command: cmd,
-		}
-		node.logs = append(node.logs, entry)
-		node.applyCond.Signal()
+	defer node.mu.Unlock()
+
+	if node.role != Leader {
+		return -1, node.currentTerm, false
 	}
-	node.mu.Unlock()
+	index = len(node.logs)
+	node.logs = append(node.logs, LogEntry{
+		Term:    node.currentTerm,
+		Index:   index,
+		Command: cmd,
+	})
+	node.applyCond.Signal()
+	return index, node.currentTerm, true
 }
 
 type NodeView struct {
