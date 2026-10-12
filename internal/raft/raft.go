@@ -454,6 +454,7 @@ func (node *Node) Propose(cmd []byte) (index int, term int, ok bool) {
 		Command: cmd,
 	})
 	node.applyCond.Signal()
+	go node.broadcastHeartbeats() // Replicate now instead of waiting for the next heartbeat
 	return index, node.currentTerm, true
 }
 
